@@ -48,9 +48,12 @@ def check_dependencies() -> None:
 # Download helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_YTDLP_BASE = ["yt-dlp", "--no-check-certificate"]
+
+
 def fetch_info(url: str) -> dict:
     print("Fetching video metadata…")
-    result = run(["yt-dlp", "--dump-json", url])
+    result = run([*_YTDLP_BASE, "--dump-json", url])
     if result.returncode != 0:
         die(f"yt-dlp metadata failed:\n{result.stderr}")
     return json.loads(result.stdout)
@@ -59,7 +62,7 @@ def fetch_info(url: str) -> dict:
 def download_subtitles(url: str, output_dir: Path) -> None:
     print("Downloading subtitles…")
     run([
-        "yt-dlp",
+        *_YTDLP_BASE,
         "--write-auto-sub", "--write-sub",
         "--sub-langs", "en.*",
         "--sub-format", "vtt",
@@ -72,7 +75,7 @@ def download_subtitles(url: str, output_dir: Path) -> None:
 def download_video(url: str, output_dir: Path) -> Path | None:
     print("Downloading video…")
     result = run([
-        "yt-dlp",
+        *_YTDLP_BASE,
         "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
         "-o", str(output_dir / "video.%(ext)s"),
         "--merge-output-format", "mp4",
