@@ -7,6 +7,16 @@ by combining the VTT transcript, video frames, and description via Claude.
 
 Usage:
     python3 youtube_to_markdown.py <youtube_url> [output.md]
+    python3 youtube_to_markdown.py <youtube_url> --cookies-from-browser chrome
+    python3 youtube_to_markdown.py <youtube_url> --cookies cookies.txt
+
+Options:
+    --cookies-from-browser BROWSER   Load cookies from an installed browser.
+                                     Values: chrome, firefox, safari, edge,
+                                             chromium, brave, opera, vivaldi
+    --cookies FILE                   Path to a Netscape-format cookies.txt file.
+                                     Export from browser with the "Get cookies.txt
+                                     LOCALLY" extension (Chrome/Firefox).
 
 Requires:
     - ANTHROPIC_API_KEY environment variable
@@ -22,6 +32,7 @@ import re
 import base64
 import tempfile
 import subprocess
+import argparse
 from pathlib import Path
 
 
@@ -48,21 +59,28 @@ def check_dependencies() -> None:
 # Download helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-_YTDLP_BASE = ["yt-dlp", "--no-check-certificate"]
+def _ytdlp_base(args: argparse.Namespace) -> list[str]:
+    """Build the common yt-dlp prefix, including any cookie flags."""
+    cmd = ["yt-dlp", "--no-check-certificate"]
+    if getattr(args, "cookies_from_browser", None):
+        cmd += ["--cookies-from-browser", args.cookies_from_browser]
+    if getattr(args, "cookies", None):
+        cmd += ["--cookies", args.cookies]
+    return cmd
 
 
-def fetch_info(url: str) -> dict:
+def fetch_info(url: str, args: argparse.Namespace) -> dict:
     print("Fetching video metadata…")
-    result = run([*_YTDLP_BASE, "--dump-json", url])
+    result = run([*_ytdlp_base(args), "--dump-json", url])
     if result.returncode != 0:
         die(f"yt-dlp metadata failed:\n{result.stderr}")
     return json.loads(result.stdout)
 
 
-def download_subtitles(url: str, output_dir: Path) -> None:
+def download_subtitles(url: str, output_dir: Path, args: argparse.Namespace) -> None:
     print("Downloading subtitles…")
     run([
-        *_YTDLP_BASE,
+        *_ytdlp_base(args),
         "--write-auto-sub", "--write-sub",
         "--sub-langs", "en.*",
         "--sub-format", "vtt",
@@ -72,10 +90,10 @@ def download_subtitles(url: str, output_dir: Path) -> None:
     ])
 
 
-def download_video(url: str, output_dir: Path) -> Path | None:
+def download_video(url: str, output_dir: Path, args: argparse.Namespace) -> Path | None:
     print("Downloading video…")
     result = run([
-        *_YTDLP_BASE,
+        *_ytdlp_base(args),
         "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
         "-o", str(output_dir / "video.%(ext)s"),
         "--merge-output-format", "mp4",
@@ -327,12 +345,24 @@ def generate_script(info: dict, segments: list[dict], frames: list[Path], interv
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-
-    url = sys.argv[1]
-    output_arg = sys.argv[2] if len(sys.argv) > 2 else None
+    parser = argparse.ArgumentParser(
+        description="Convert a YouTube video into a markdown screening script via Claude.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("url", help="YouTube video or Shorts URL")
+    parser.add_argument("output", nargs="?", help="Output markdown file (default: <title>.md)")
+    parser.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER",
+        help="Load YouTube cookies from an installed browser (chrome, firefox, safari, edge, …)",
+    )
+    parser.add_argument(
+        "--cookies",
+        metavar="FILE",
+        help="Path to a Netscape-format cookies.txt file",
+    )
+    args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -340,15 +370,18 @@ def main() -> None:
 
     check_dependencies()
 
+    if args.cookies and not Path(args.cookies).exists():
+        die(f"Cookies file not found: {args.cookies}")
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
 
-        info = fetch_info(url)
+        info = fetch_info(args.url, args)
         title = info.get("title", "video")
         duration = int(info.get("duration") or 0)
 
-        download_subtitles(url, tmp_dir)
-        video_path = download_video(url, tmp_dir)
+        download_subtitles(args.url, tmp_dir, args)
+        video_path = download_video(args.url, tmp_dir, args)
 
         segments = find_vtt(tmp_dir)
 
@@ -359,9 +392,8 @@ def main() -> None:
 
         script = generate_script(info, segments, frames, interval, api_key)
 
-        # Determine output path
-        if output_arg:
-            out_path = Path(output_arg)
+        if args.output:
+            out_path = Path(args.output)
         else:
             safe = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")[:60]
             out_path = Path(f"{safe}.md")
